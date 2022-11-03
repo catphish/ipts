@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <linux/hidraw.h>
 #include <linux/input.h>
+#include <linux/uinput.h>
 #include <math.h>
 #include <png.h>
 #include <stdint.h>
@@ -36,6 +37,12 @@ struct cluster {
   float y2;
   float diameter;
   uint8_t valid;
+  int id;
+};
+
+struct cluster_group {
+  uint8_t size;
+  struct cluster clusters[MAX_CLUSTERS];
 };
 
 struct ipts_hid_header {
@@ -119,43 +126,105 @@ int is_brightest(struct pixel *pixels, int x, int y) {
   return 1;
 }
 
+void emit(int fd, int type, int code, int val) {
+  struct input_event ie;
+
+  ie.type = type;
+  ie.code = code;
+  ie.value = val;
+  /* timestamp values below are ignored */
+  ie.time.tv_sec = 0;
+  ie.time.tv_usec = 0;
+
+  write(fd, &ie, sizeof(ie));
+}
+
 int main() {
   // Initialize SDL for testing
-  SDL_Init(SDL_INIT_VIDEO);
-  TTF_Init();
-  SDL_Event event;
-  SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
-  SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
-  TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
+  // SDL_Init(SDL_INIT_VIDEO);
+  // TTF_Init();
+  // SDL_Event event;
+  // SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
+  // SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+  // SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
+  // TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
+
+  // Open uinput device
+  int uinput = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+  ioctl(uinput, UI_SET_EVBIT, EV_KEY);
+  ioctl(uinput, UI_SET_KEYBIT, BTN_TOUCH);
+
+  ioctl(uinput, UI_SET_EVBIT, EV_ABS);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_X);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_Y);
+
+  ioctl(uinput, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+
+  ioctl(uinput, UI_SET_ABSBIT, ABS_MT_SLOT);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_X);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
+
+  struct uinput_setup usetup;
+  memset(&usetup, 0, sizeof(usetup));
+  usetup.id.bustype = BUS_USB;
+  usetup.id.vendor = 0x1234;  /* sample vendor */
+  usetup.id.product = 0x5678; /* sample product */
+  strcpy(usetup.name, "Test tablet device");
+  ioctl(uinput, UI_DEV_SETUP, &usetup);
+
+  struct uinput_abs_setup abs;
+  memset(&abs, 0, sizeof(abs));
+  abs.code = ABS_X;
+  abs.absinfo.maximum = WIDTH * SCALE;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+  abs.code = ABS_MT_POSITION_X;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_Y;
+  abs.absinfo.maximum = HEIGHT * SCALE;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+  abs.code = ABS_MT_POSITION_Y;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_MT_SLOT;
+  abs.absinfo.maximum = 10;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+  abs.code = ABS_MT_TRACKING_ID;
+  abs.absinfo.maximum = 10;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
+
+  ioctl(uinput, UI_DEV_CREATE);
 
   // Open a hidraw device (or test file)
-  int fd = open("hid.raw", O_RDWR);
+  int fd = open("/dev/hidraw1", O_RDWR);
   if (fd < 0) {
     perror("Error opening device/file");
     return 1;
   }
 
   // Call IOCTL to enable heatmaps on surface pro 5
-  // uint8_t req[] = {66, 1};
-  // int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
-  // if (ret < 0) {
-  //   perror("Error on ioctl HIDIOCSFEATURE");
-  //   return 1;
-  // }
+  uint8_t req[] = {66, 1};
+  int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
+  if (ret < 0) {
+    perror("Error on ioctl HIDIOCSFEATURE");
+    return 1;
+  }
 
   // Allocate memory for file reads, heatmap, and clusters
   void *buf = malloc(7485);
   struct pixel *pixels = malloc(sizeof(struct pixel) * WIDTH * HEIGHT);
-  struct cluster *clusters = malloc(sizeof(struct cluster) * MAX_CLUSTERS);
+  struct cluster_group *cluster_groups = malloc(sizeof(struct cluster_group) * 2);
+  memset(cluster_groups, 0, sizeof(struct cluster_group) * 2);
+  int current_cluster_group = 0;
 
   while (1) {
     // Exit on SDL quit event
-    while (SDL_PollEvent(&event)) {
-      if (event.type == SDL_QUIT) {
-        return 0;
-      }
-    }
+    // while (SDL_PollEvent(&event)) {
+    //   if (event.type == SDL_QUIT) {
+    //     return 0;
+    //   }
+    // }
     // Read a frame from the device
     int n = read(fd, buf, 7485);
     if (n < 7485) {
@@ -163,6 +232,13 @@ int main() {
       lseek(fd, 0, SEEK_SET);
       continue;
     }
+
+    struct cluster_group *cluster_group = &cluster_groups[current_cluster_group];
+    memset(cluster_group, 0, sizeof(struct cluster_group));
+    struct cluster_group *previous_cluster_group = &cluster_groups[current_cluster_group ^ 1];
+    struct cluster *clusters = cluster_group->clusters;
+    struct cluster *previous_clusters = previous_cluster_group->clusters;
+    current_cluster_group ^= 1;
 
     // Parse the received frame data
     int pos = 0;
@@ -199,7 +275,7 @@ int main() {
                 for (int x = 0; x < WIDTH; x++) {
                   uint8_t xx = WIDTH - x - 1;
                   uint8_t yy = HEIGHT - y - 1;
-                  int value = 255 - raw_pixels[yy * WIDTH + xx] - 90;
+                  int value = 255 - raw_pixels[yy * WIDTH + xx] - 100;
                   if (value < 0) value = 0;
                   pixels[y * WIDTH + x].value = value;
                   pixels[y * WIDTH + x].x = x;
@@ -208,22 +284,21 @@ int main() {
               }
 
               // Group pixels into clusters
-              memset(clusters, 0, sizeof(struct cluster) * MAX_CLUSTERS);
-              int cluster_count = 0;
+              cluster_group->size = 0;
               for (int y = 0; y < HEIGHT; y++) {
                 for (int x = 0; x < WIDTH; x++) {
                   // First identify the brightest pixels in the heatmap
                   // These are pixels that have no brighter neighbor
                   if (is_brightest(pixels, x, y)) {
                     // For each bright spot, create a cluster and add surrounding pixels to it recursively
-                    if (cluster_count < MAX_CLUSTERS) assign_group_dimmer(pixels, x, y, &clusters[cluster_count++], pixels[y * WIDTH + x].value);
+                    if (cluster_group->size < MAX_CLUSTERS) assign_group_dimmer(pixels, x, y, &clusters[cluster_group->size++], pixels[y * WIDTH + x].value);
                   }
                 }
               }
 
               // Calculate bounds of each cluster
               // We use floats to do this in the device space. We can convert to screen space later
-              for (int i = 0; i < cluster_count; i++) {
+              for (int i = 0; i < cluster_group->size; i++) {
                 // Use each pixel's position and value to create a weighted average position
                 float weighted_x = 0;
                 float weighted_y = 0;
@@ -247,8 +322,8 @@ int main() {
               }
 
               // Remove overlapping clusters
-              for (int i = 0; i < cluster_count; i++) {
-                for (int j = i + 1; j < cluster_count; j++) {
+              for (int i = 0; i < cluster_group->size; i++) {
+                for (int j = i + 1; j < cluster_group->size; j++) {
                   if (clusters[i].valid && clusters[j].valid) {
                     // Calculate the intersection of each pair of clusters
                     float intersection = fmax(0, fmin(clusters[i].x2, clusters[j].x2) - fmax(clusters[i].x1, clusters[j].x1)) * fmax(0, fmin(clusters[i].y2, clusters[j].y2) - fmax(clusters[i].y1, clusters[j].y1));
@@ -269,53 +344,130 @@ int main() {
                 }
               }
 
-              // Draw raw data to screen
-              for (int y = 0; y < HEIGHT; y++) {
-                for (int x = 0; x < WIDTH; x++) {
-                  int xx = WIDTH - x - 1;
-                  int yy = HEIGHT - y - 1;
-                  uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
-                  SDL_Rect rect;
-                  rect.x = x * SCALE;
-                  rect.y = y * SCALE;
-                  rect.w = SCALE;
-                  rect.h = SCALE;
-                  SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
-                  SDL_RenderFillRect(ren, &rect);
+              // Attempt to collelate clusters with those from previous frames
+              // This is done by iterating through previous clusters and finding the closest match in the current frame
+              for (int n = 0; n < previous_cluster_group->size; n++) {
+                if (!previous_clusters[n].valid) continue;
+                float closest_distance = 1000000;
+                int closest_index = -1;
+                for (int m = 0; m < cluster_group->size; m++) {
+                  if (clusters[m].valid && clusters[m].id == 0) {
+                    float distance = pow(clusters[m].centre_x - previous_clusters[n].centre_x, 2) + pow(clusters[m].centre_y - previous_clusters[n].centre_y, 2);
+                    if (distance < closest_distance) {
+                      closest_distance = distance;
+                      closest_index = m;
+                    }
+                  }
+                }
+                if (closest_index != -1) {
+                  clusters[closest_index].id = previous_clusters[n].id;
                 }
               }
 
-              // Draw clusters to screen
-              int valid_clusters = 0;
-              for (int i = 0; i < cluster_count; i++) {
-                SDL_Rect rect;
-                rect.x = clusters[i].x1 * SCALE;
-                rect.y = clusters[i].y1 * SCALE;
-                rect.w = clusters[i].diameter * SCALE;
-                rect.h = clusters[i].diameter * SCALE;
-                if (clusters[i].valid) {
-                  SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
-                  valid_clusters++;
-                } else {
-                  SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
+              // Assign new IDs to any clusters that don't have one yet
+              for (int m = 0; m < cluster_group->size; m++) {
+                if (clusters[m].valid && clusters[m].id == 0) {
+                  // Find the lowest unused ID
+                  int id = 1;
+                  while (1) {
+                    int found = 0;
+                    for (int n = 0; n < cluster_group->size; n++) {
+                      if (clusters[n].id == id) {
+                        found = 1;
+                        break;
+                      }
+                    }
+                    if (!found) break;
+                    id++;
+                  }
+                  clusters[m].id = id;
                 }
-                SDL_RenderDrawRect(ren, &rect);
               }
 
-              // Draw cluster count to screen
-              char text[100];
-              sprintf(text, "Clusters: %d", valid_clusters);
-              SDL_Surface *surface;
-              SDL_Color color = {0, 0, 0};
-              surface = TTF_RenderText_Solid(font, text, color);
-              SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
-              SDL_Rect dstrect = {0, 0, surface->w, surface->h};
-              SDL_FreeSurface(surface);
-              SDL_RenderCopy(ren, texture, NULL, &dstrect);
-              SDL_DestroyTexture(texture);
+              // // Draw raw data to screen
+              // for (int y = 0; y < HEIGHT; y++) {
+              //   for (int x = 0; x < WIDTH; x++) {
+              //     int xx = WIDTH - x - 1;
+              //     int yy = HEIGHT - y - 1;
+              //     uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
+              //     SDL_Rect rect;
+              //     rect.x = x * SCALE;
+              //     rect.y = y * SCALE;
+              //     rect.w = SCALE;
+              //     rect.h = SCALE;
+              //     SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
+              //     SDL_RenderFillRect(ren, &rect);
+              //   }
+              // }
 
-              // Update screen
-              SDL_RenderPresent(ren);
+              // // Draw clusters to screen
+              // int valid_clusters = 0;
+              // for (int i = 0; i < cluster_group->size; i++) {
+              //   SDL_Rect rect;
+              //   rect.x = clusters[i].x1 * SCALE;
+              //   rect.y = clusters[i].y1 * SCALE;
+              //   rect.w = clusters[i].diameter * SCALE;
+              //   rect.h = clusters[i].diameter * SCALE;
+              //   if (clusters[i].valid) {
+              //     SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+              //     valid_clusters++;
+              //     char text[100];
+              //     sprintf(text, "%d", clusters[i].id);
+              //     SDL_Surface *surface;
+              //     SDL_Color color = {0, 0, 0};
+              //     surface = TTF_RenderText_Solid(font, text, color);
+              //     SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+              //     SDL_Rect dstrect = {rect.x, rect.y, surface->w, surface->h};
+              //     SDL_FreeSurface(surface);
+              //     SDL_RenderCopy(ren, texture, NULL, &dstrect);
+              //     SDL_DestroyTexture(texture);
+              //   } else {
+              //     SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
+              //   }
+              //   SDL_RenderDrawRect(ren, &rect);
+              // }
+
+              // // Draw cluster count to screen
+              // char text[100];
+              // sprintf(text, "Clusters: %d", valid_clusters);
+              // SDL_Surface *surface;
+              // SDL_Color color = {0, 0, 0};
+              // surface = TTF_RenderText_Solid(font, text, color);
+              // SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+              // SDL_Rect dstrect = {0, 0, surface->w, surface->h};
+              // SDL_FreeSurface(surface);
+              // SDL_RenderCopy(ren, texture, NULL, &dstrect);
+              // SDL_DestroyTexture(texture);
+
+              // // Update screen
+              // SDL_RenderPresent(ren);
+
+              int found = 0;
+
+              // Emit to uinput
+              for (int n = 0; n < 6; n++) {
+                emit(uinput, EV_ABS, ABS_MT_SLOT, n);
+                int tracking_id = -1;
+                for (int i = 0; i < cluster_group->size; i++) {
+                  if (clusters[i].id == n && clusters[i].valid) {
+                    emit(uinput, EV_ABS, ABS_MT_POSITION_X, clusters[i].centre_x * SCALE);
+                    emit(uinput, EV_ABS, ABS_MT_POSITION_Y, clusters[i].centre_y * SCALE);
+                    tracking_id = clusters[i].id;
+                    if (!found) {
+                      emit(uinput, EV_ABS, ABS_X, clusters[i].centre_x * SCALE);
+                      emit(uinput, EV_ABS, ABS_Y, clusters[i].centre_y * SCALE);
+                      emit(uinput, EV_KEY, BTN_TOUCH, 1);
+                      found = 1;
+                    }
+                  }
+                }
+                emit(uinput, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
+              }
+              if (!found) {
+                emit(uinput, EV_KEY, BTN_TOUCH, 0);
+              }
+
+              emit(uinput, EV_SYN, SYN_REPORT, 0);
 
               // Sleep 100ms
               // nanosleep((const struct timespec[]){{0, 100000000L}}, NULL);
