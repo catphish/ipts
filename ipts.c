@@ -73,6 +73,23 @@ struct ipts_report_header {
   uint16_t size;
 } __attribute__((packed));
 
+struct ipts_stylus_report {
+  uint8_t elements;
+  uint8_t reserved[3];
+  uint32_t serial;
+} __attribute__((packed));
+
+struct ipts_stylus_element {
+  uint16_t timestamp;
+  uint16_t mode;
+  uint16_t x;
+  uint16_t y;
+  uint16_t pressure;
+  uint16_t altitude;
+  uint16_t azimuth;
+  uint8_t reserved[2];
+} __attribute__((packed));
+
 // Add a pixel to a cluster if it is dimmer than a threshold
 // This function calls itself recursively to add surrounding pixels to the cluster until
 // it enounters a pixel that is brighter than the previous one, or black.
@@ -84,6 +101,7 @@ void assign_group_dimmer(struct pixel *pixels, int x, int y, struct cluster *clu
   for (int n = 0; n < cluster->size; n++) {
     if (cluster->pixels[n].x == x && cluster->pixels[n].y == y) return;
   }
+
   // Abort if the pixel is black
   if (pixels[y * WIDTH + x].value == 0) return;
   // Abort if the pixel is brighter than the threshold
@@ -141,16 +159,17 @@ void emit(int fd, int type, int code, int val) {
 
 int main() {
   // Initialize SDL for testing
-  // SDL_Init(SDL_INIT_VIDEO);
-  // TTF_Init();
-  // SDL_Event event;
-  // SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
-  // SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  // SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
-  // TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
+  SDL_Init(SDL_INIT_VIDEO);
+  TTF_Init();
+  SDL_Event event;
+  SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
+  SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+  SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
+  TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
 
   // Open uinput device
-  int uinput = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+  int uinput = -1;
+  // uinput = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
   ioctl(uinput, UI_SET_EVBIT, EV_KEY);
   ioctl(uinput, UI_SET_KEYBIT, BTN_TOUCH);
 
@@ -164,6 +183,7 @@ int main() {
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_X);
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
+  ioctl(uinput, UI_SET_ABSBIT, ABS_MT_TOUCH_MAJOR);
 
   struct uinput_setup usetup;
   memset(&usetup, 0, sizeof(usetup));
@@ -193,23 +213,34 @@ int main() {
   abs.code = ABS_MT_TRACKING_ID;
   abs.absinfo.maximum = 10;
   ioctl(uinput, UI_ABS_SETUP, &abs);
+  abs.code = ABS_MT_TOUCH_MAJOR;
+  abs.absinfo.maximum = 1000;
+  ioctl(uinput, UI_ABS_SETUP, &abs);
 
   ioctl(uinput, UI_DEV_CREATE);
 
   // Open a hidraw device (or test file)
-  int fd = open("/dev/hidraw1", O_RDWR);
+  // int fd = open("/dev/hidraw0", O_RDWR);
+  // if (fd < 0) {
+  //   fd = open("/dev/hidraw1", O_RDWR);
+  //   if (fd < 0) {
+  //     perror("Error opening device/file");
+  //     return 1;
+  //   }
+  // }
+  int fd = open("hid2.raw", O_RDWR);
   if (fd < 0) {
     perror("Error opening device/file");
     return 1;
   }
 
   // Call IOCTL to enable heatmaps on surface pro 5
-  uint8_t req[] = {66, 1};
-  int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
-  if (ret < 0) {
-    perror("Error on ioctl HIDIOCSFEATURE");
-    return 1;
-  }
+  // uint8_t req[] = {66, 1};
+  // int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
+  // if (ret < 0) {
+  //   perror("Error on ioctl HIDIOCSFEATURE");
+  //   return 1;
+  // }
 
   // Allocate memory for file reads, heatmap, and clusters
   void *buf = malloc(7485);
@@ -220,11 +251,12 @@ int main() {
 
   while (1) {
     // Exit on SDL quit event
-    // while (SDL_PollEvent(&event)) {
-    //   if (event.type == SDL_QUIT) {
-    //     return 0;
-    //   }
-    // }
+    while (SDL_PollEvent(&event)) {
+      if (event.type == SDL_QUIT) {
+        return 0;
+      }
+    }
+
     // Read a frame from the device
     int n = read(fd, buf, 7485);
     if (n < 7485) {
@@ -264,11 +296,21 @@ int main() {
           while (pos < eof) {
             struct ipts_report_header *ipts_report_header = buf + pos;
             pos += 4;
-            // printf("    Report Type: %02x\n", ipts_report_header->type);
+            // printf("    Report Type: %08x\n", ipts_report_header->type);
             // printf("    Report Size: %02x\n", ipts_report_header->size);
-            if (ipts_report_header->type == 0x25) {
+            if (ipts_report_header->type == 0x60) {
+              struct ipts_stylus_report *ipts_stylus_report = buf + pos;
+              printf("Stylus data! Serial: %d\n", ipts_stylus_report->serial);
+              // Loop through stylus elements
+              for (int n = 0; n < ipts_stylus_report->elements; n++) {
+                struct ipts_stylus_element *ipts_stylus_element = buf + pos + 8 + n * 16;
+                printf("  Element: Mode: %02x, X: %d, Y: %d\n", ipts_stylus_element->mode, ipts_stylus_element->x, ipts_stylus_element->y);
+                printf("    Pressure: %d, Altitude: %d, Azimuth: %d\n", ipts_stylus_element->pressure, ipts_stylus_element->altitude, ipts_stylus_element->azimuth);
+              }
+            } else if (ipts_report_header->type == 0x25) {
               // We have heatmap data, start processing!
               uint8_t *raw_pixels = buf + pos;
+              int disable_touch = 0;
 
               // Copy pixels from raw frame and invert both axes as well as the values
               for (int y = 0; y < HEIGHT; y++) {
@@ -318,7 +360,15 @@ int main() {
                 clusters[i].y2 = clusters[i].centre_y + clusters[i].diameter / 2;
                 // Mark all clusters as valid intially
                 // We could add additional checks here to filter out clusters that are too small or too large
-                clusters[i].valid = 1;
+                if (clusters[i].diameter > 0.5f) clusters[i].valid = 1;
+                if (clusters[i].diameter > 10.f) disable_touch = 1;
+              }
+
+              if (disable_touch) {
+                // If we have a cluster that is too large, disable touch
+                for (int i = 0; i < cluster_group->size; i++) {
+                  clusters[i].valid = 0;
+                }
               }
 
               // Remove overlapping clusters
@@ -332,11 +382,11 @@ int main() {
                     float area_j = (clusters[j].x2 - clusters[j].x1) * (clusters[j].y2 - clusters[j].y1);
                     // If the intersection is greater than 50% of the smaller cluster, invalidate it
                     if (area_i > area_j) {
-                      if (intersection / area_j > 0.5) {
+                      if (intersection / area_j > 0.25) {
                         clusters[j].valid = 0;
                       }
                     } else {
-                      if (intersection / area_i > 0.5) {
+                      if (intersection / area_i > 0.25) {
                         clusters[i].valid = 0;
                       }
                     }
@@ -384,93 +434,98 @@ int main() {
                 }
               }
 
-              // // Draw raw data to screen
-              // for (int y = 0; y < HEIGHT; y++) {
-              //   for (int x = 0; x < WIDTH; x++) {
-              //     int xx = WIDTH - x - 1;
-              //     int yy = HEIGHT - y - 1;
-              //     uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
-              //     SDL_Rect rect;
-              //     rect.x = x * SCALE;
-              //     rect.y = y * SCALE;
-              //     rect.w = SCALE;
-              //     rect.h = SCALE;
-              //     SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
-              //     SDL_RenderFillRect(ren, &rect);
-              //   }
-              // }
+              // Draw raw data to screen
+              for (int y = 0; y < HEIGHT; y++) {
+                for (int x = 0; x < WIDTH; x++) {
+                  int xx = WIDTH - x - 1;
+                  int yy = HEIGHT - y - 1;
+                  uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
+                  SDL_Rect rect;
+                  rect.x = x * SCALE;
+                  rect.y = y * SCALE;
+                  rect.w = SCALE;
+                  rect.h = SCALE;
+                  SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
+                  SDL_RenderFillRect(ren, &rect);
+                }
+              }
 
-              // // Draw clusters to screen
-              // int valid_clusters = 0;
-              // for (int i = 0; i < cluster_group->size; i++) {
-              //   SDL_Rect rect;
-              //   rect.x = clusters[i].x1 * SCALE;
-              //   rect.y = clusters[i].y1 * SCALE;
-              //   rect.w = clusters[i].diameter * SCALE;
-              //   rect.h = clusters[i].diameter * SCALE;
-              //   if (clusters[i].valid) {
-              //     SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
-              //     valid_clusters++;
-              //     char text[100];
-              //     sprintf(text, "%d", clusters[i].id);
-              //     SDL_Surface *surface;
-              //     SDL_Color color = {0, 0, 0};
-              //     surface = TTF_RenderText_Solid(font, text, color);
-              //     SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
-              //     SDL_Rect dstrect = {rect.x, rect.y, surface->w, surface->h};
-              //     SDL_FreeSurface(surface);
-              //     SDL_RenderCopy(ren, texture, NULL, &dstrect);
-              //     SDL_DestroyTexture(texture);
-              //   } else {
-              //     SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
-              //   }
-              //   SDL_RenderDrawRect(ren, &rect);
-              // }
+              // Draw clusters to screen
+              int valid_clusters = 0;
+              for (int i = 0; i < cluster_group->size; i++) {
+                SDL_Rect rect;
+                rect.x = clusters[i].x1 * SCALE;
+                rect.y = clusters[i].y1 * SCALE;
+                rect.w = clusters[i].diameter * SCALE;
+                rect.h = clusters[i].diameter * SCALE;
+                if (clusters[i].valid) {
+                  SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+                  valid_clusters++;
+                  char text[100];
+                  sprintf(text, "%d", clusters[i].id);
+                  SDL_Surface *surface;
+                  SDL_Color color = {0, 0, 0};
+                  surface = TTF_RenderText_Solid(font, text, color);
+                  SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+                  SDL_Rect dstrect = {rect.x, rect.y, surface->w, surface->h};
+                  SDL_FreeSurface(surface);
+                  SDL_RenderCopy(ren, texture, NULL, &dstrect);
+                  SDL_DestroyTexture(texture);
+                } else {
+                  SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
+                }
+                SDL_RenderDrawRect(ren, &rect);
+              }
 
-              // // Draw cluster count to screen
-              // char text[100];
-              // sprintf(text, "Clusters: %d", valid_clusters);
-              // SDL_Surface *surface;
-              // SDL_Color color = {0, 0, 0};
-              // surface = TTF_RenderText_Solid(font, text, color);
-              // SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
-              // SDL_Rect dstrect = {0, 0, surface->w, surface->h};
-              // SDL_FreeSurface(surface);
-              // SDL_RenderCopy(ren, texture, NULL, &dstrect);
-              // SDL_DestroyTexture(texture);
+              // Draw cluster count to screen
+              char text[100];
+              sprintf(text, "Clusters: %d", valid_clusters);
+              SDL_Surface *surface;
+              SDL_Color color = {0, 0, 0};
+              surface = TTF_RenderText_Solid(font, text, color);
+              SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+              SDL_Rect dstrect = {0, 0, surface->w, surface->h};
+              SDL_FreeSurface(surface);
+              SDL_RenderCopy(ren, texture, NULL, &dstrect);
+              SDL_DestroyTexture(texture);
 
-              // // Update screen
-              // SDL_RenderPresent(ren);
+              // Update screen
+              SDL_RenderPresent(ren);
 
-              int found = 0;
+              valid_clusters = 0;
+              for (int n = 0; n < cluster_group->size; n++) {
+                if (clusters[n].valid) {
+                  valid_clusters++;
+                }
+              }
 
               // Emit to uinput
               for (int n = 0; n < 6; n++) {
                 emit(uinput, EV_ABS, ABS_MT_SLOT, n);
                 int tracking_id = -1;
                 for (int i = 0; i < cluster_group->size; i++) {
-                  if (clusters[i].id == n && clusters[i].valid) {
+                  if (clusters[i].id == n + 1 && clusters[i].valid) {
                     emit(uinput, EV_ABS, ABS_MT_POSITION_X, clusters[i].centre_x * SCALE);
                     emit(uinput, EV_ABS, ABS_MT_POSITION_Y, clusters[i].centre_y * SCALE);
+                    emit(uinput, EV_ABS, ABS_MT_TOUCH_MAJOR, clusters[i].diameter * SCALE);
                     tracking_id = clusters[i].id;
-                    if (!found) {
+                    if (valid_clusters == 1) {
                       emit(uinput, EV_ABS, ABS_X, clusters[i].centre_x * SCALE);
                       emit(uinput, EV_ABS, ABS_Y, clusters[i].centre_y * SCALE);
                       emit(uinput, EV_KEY, BTN_TOUCH, 1);
-                      found = 1;
                     }
                   }
                 }
                 emit(uinput, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
               }
-              if (!found) {
+              if (valid_clusters != 1) {
                 emit(uinput, EV_KEY, BTN_TOUCH, 0);
               }
 
               emit(uinput, EV_SYN, SYN_REPORT, 0);
 
               // Sleep 100ms
-              // nanosleep((const struct timespec[]){{0, 100000000L}}, NULL);
+              // nanosleep((const struct timespec[]){{0, 50000000L}}, NULL);
             }
             pos += ipts_report_header->size;
           }
