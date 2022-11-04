@@ -159,26 +159,22 @@ void emit(int fd, int type, int code, int val) {
 
 int main() {
   // Initialize SDL for testing
-  SDL_Init(SDL_INIT_VIDEO);
-  TTF_Init();
-  SDL_Event event;
-  SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
-  SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
-  TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
+  // SDL_Init(SDL_INIT_VIDEO);
+  // TTF_Init();
+  // SDL_Event event;
+  // SDL_Window *win = SDL_CreateWindow("Tablet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * SCALE, HEIGHT * SCALE, 0);
+  // SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+  // SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH * SCALE, HEIGHT * SCALE);
+  // TTF_Font *font = TTF_OpenFont("OpenSans-Regular.ttf", 24);
 
   // Open uinput device
-  int uinput = -1;
-  // uinput = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+  int uinput = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
   ioctl(uinput, UI_SET_EVBIT, EV_KEY);
   ioctl(uinput, UI_SET_KEYBIT, BTN_TOUCH);
-
   ioctl(uinput, UI_SET_EVBIT, EV_ABS);
   ioctl(uinput, UI_SET_ABSBIT, ABS_X);
   ioctl(uinput, UI_SET_ABSBIT, ABS_Y);
-
   ioctl(uinput, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
-
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_SLOT);
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_X);
   ioctl(uinput, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
@@ -195,6 +191,8 @@ int main() {
 
   struct uinput_abs_setup abs;
   memset(&abs, 0, sizeof(abs));
+  abs.absinfo.resolution = 100;
+
   abs.code = ABS_X;
   abs.absinfo.maximum = WIDTH * SCALE;
   ioctl(uinput, UI_ABS_SETUP, &abs);
@@ -219,28 +217,75 @@ int main() {
 
   ioctl(uinput, UI_DEV_CREATE);
 
-  // Open a hidraw device (or test file)
-  // int fd = open("/dev/hidraw0", O_RDWR);
-  // if (fd < 0) {
-  //   fd = open("/dev/hidraw1", O_RDWR);
-  //   if (fd < 0) {
-  //     perror("Error opening device/file");
-  //     return 1;
-  //   }
-  // }
-  int fd = open("hid2.raw", O_RDWR);
-  if (fd < 0) {
-    perror("Error opening device/file");
-    return 1;
-  }
+  // Open another uinput device for stylus data
+  int uinput_stylus = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+  ioctl(uinput_stylus, UI_SET_EVBIT, EV_KEY);
+  ioctl(uinput_stylus, UI_SET_EVBIT, EV_ABS);
+  ioctl(uinput_stylus, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+  ioctl(uinput_stylus, UI_SET_PROPBIT, INPUT_PROP_POINTER);
+  ioctl(uinput_stylus, UI_SET_KEYBIT, BTN_TOUCH);
+  ioctl(uinput_stylus, UI_SET_KEYBIT, BTN_STYLUS);
+  ioctl(uinput_stylus, UI_SET_KEYBIT, BTN_TOOL_PEN);
+  ioctl(uinput_stylus, UI_SET_KEYBIT, BTN_TOOL_RUBBER);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_X);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_Y);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_PRESSURE);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_TILT_X);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_TILT_Y);
+  ioctl(uinput_stylus, UI_SET_ABSBIT, ABS_MISC);
 
-  // Call IOCTL to enable heatmaps on surface pro 5
-  // uint8_t req[] = {66, 1};
-  // int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
-  // if (ret < 0) {
-  //   perror("Error on ioctl HIDIOCSFEATURE");
+  usetup.id.vendor = 0x1234;  /* sample vendor */
+  usetup.id.product = 0x5679; /* sample product */
+  strcpy(usetup.name, "Test stylus device");
+  ioctl(uinput_stylus, UI_DEV_SETUP, &usetup);
+
+  abs.code = ABS_X;
+  abs.absinfo.maximum = 9600;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_Y;
+  abs.absinfo.maximum = 7200;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_TILT_X;
+  abs.absinfo.maximum = 100;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+  abs.code = ABS_TILT_Y;
+  abs.absinfo.maximum = 100;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_PRESSURE;
+  abs.absinfo.maximum = 4096;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+
+  abs.code = ABS_MISC;
+  abs.absinfo.maximum = USHRT_MAX;
+  ioctl(uinput_stylus, UI_ABS_SETUP, &abs);
+
+  ioctl(uinput_stylus, UI_DEV_CREATE);
+
+  // Open a hidraw device(or test file)
+  int fd = open("/dev/hidraw0", O_RDWR);
+  if (fd < 0) {
+    fd = open("/dev/hidraw1", O_RDWR);
+    if (fd < 0) {
+      perror("Error opening device/file");
+      return 1;
+    }
+  }
+  // int fd = open("hid2.raw", O_RDWR);
+  // if (fd < 0) {
+  //   perror("Error opening device/file");
   //   return 1;
   // }
+
+  // Call IOCTL to enable heatmaps on surface pro 5
+  uint8_t req[] = {66, 1};
+  int ret = ioctl(fd, HIDIOCSFEATURE(2), &req);
+  if (ret < 0) {
+    perror("Error on ioctl HIDIOCSFEATURE");
+    return 1;
+  }
 
   // Allocate memory for file reads, heatmap, and clusters
   void *buf = malloc(7485);
@@ -251,11 +296,11 @@ int main() {
 
   while (1) {
     // Exit on SDL quit event
-    while (SDL_PollEvent(&event)) {
-      if (event.type == SDL_QUIT) {
-        return 0;
-      }
-    }
+    // while (SDL_PollEvent(&event)) {
+    //   if (event.type == SDL_QUIT) {
+    //     return 0;
+    //   }
+    // }
 
     // Read a frame from the device
     int n = read(fd, buf, 7485);
@@ -306,6 +351,23 @@ int main() {
                 struct ipts_stylus_element *ipts_stylus_element = buf + pos + 8 + n * 16;
                 printf("  Element: Mode: %02x, X: %d, Y: %d\n", ipts_stylus_element->mode, ipts_stylus_element->x, ipts_stylus_element->y);
                 printf("    Pressure: %d, Altitude: %d, Azimuth: %d\n", ipts_stylus_element->pressure, ipts_stylus_element->altitude, ipts_stylus_element->azimuth);
+                uint8_t proximity = ipts_stylus_element->mode & 0x01;
+                uint8_t contact = ipts_stylus_element->mode & 0x02;
+                uint8_t button = ipts_stylus_element->mode & 0x04;
+                uint8_t eraser = ipts_stylus_element->mode & 0x08;
+                if (proximity) {
+                  emit(uinput_stylus, EV_ABS, ABS_X, ipts_stylus_element->x);
+                  emit(uinput_stylus, EV_ABS, ABS_Y, ipts_stylus_element->y);
+                  emit(uinput_stylus, EV_ABS, ABS_TILT_X, 0);
+                  emit(uinput_stylus, EV_ABS, ABS_TILT_Y, 0);
+                  emit(uinput_stylus, EV_ABS, ABS_PRESSURE, ipts_stylus_element->pressure);
+                  emit(uinput_stylus, EV_KEY, BTN_TOUCH, !!contact);
+                  emit(uinput_stylus, EV_KEY, BTN_TOOL_PEN, 0);
+                  emit(uinput_stylus, EV_KEY, BTN_TOOL_RUBBER, 0);
+                  emit(uinput_stylus, EV_KEY, BTN_STYLUS, 0);
+
+                  emit(uinput_stylus, EV_SYN, SYN_REPORT, 0);
+                }
               }
             } else if (ipts_report_header->type == 0x25) {
               // We have heatmap data, start processing!
@@ -435,64 +497,64 @@ int main() {
               }
 
               // Draw raw data to screen
-              for (int y = 0; y < HEIGHT; y++) {
-                for (int x = 0; x < WIDTH; x++) {
-                  int xx = WIDTH - x - 1;
-                  int yy = HEIGHT - y - 1;
-                  uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
-                  SDL_Rect rect;
-                  rect.x = x * SCALE;
-                  rect.y = y * SCALE;
-                  rect.w = SCALE;
-                  rect.h = SCALE;
-                  SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
-                  SDL_RenderFillRect(ren, &rect);
-                }
-              }
+              // for (int y = 0; y < HEIGHT; y++) {
+              //   for (int x = 0; x < WIDTH; x++) {
+              //     int xx = WIDTH - x - 1;
+              //     int yy = HEIGHT - y - 1;
+              //     uint8_t pixel = 255 - raw_pixels[yy * WIDTH + xx];
+              //     SDL_Rect rect;
+              //     rect.x = x * SCALE;
+              //     rect.y = y * SCALE;
+              //     rect.w = SCALE;
+              //     rect.h = SCALE;
+              //     SDL_SetRenderDrawColor(ren, pixel, pixel, pixel, 255);
+              //     SDL_RenderFillRect(ren, &rect);
+              //   }
+              // }
 
               // Draw clusters to screen
-              int valid_clusters = 0;
-              for (int i = 0; i < cluster_group->size; i++) {
-                SDL_Rect rect;
-                rect.x = clusters[i].x1 * SCALE;
-                rect.y = clusters[i].y1 * SCALE;
-                rect.w = clusters[i].diameter * SCALE;
-                rect.h = clusters[i].diameter * SCALE;
-                if (clusters[i].valid) {
-                  SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
-                  valid_clusters++;
-                  char text[100];
-                  sprintf(text, "%d", clusters[i].id);
-                  SDL_Surface *surface;
-                  SDL_Color color = {0, 0, 0};
-                  surface = TTF_RenderText_Solid(font, text, color);
-                  SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
-                  SDL_Rect dstrect = {rect.x, rect.y, surface->w, surface->h};
-                  SDL_FreeSurface(surface);
-                  SDL_RenderCopy(ren, texture, NULL, &dstrect);
-                  SDL_DestroyTexture(texture);
-                } else {
-                  SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
-                }
-                SDL_RenderDrawRect(ren, &rect);
-              }
+              // int valid_clusters = 0;
+              // for (int i = 0; i < cluster_group->size; i++) {
+              //   SDL_Rect rect;
+              //   rect.x = clusters[i].x1 * SCALE;
+              //   rect.y = clusters[i].y1 * SCALE;
+              //   rect.w = clusters[i].diameter * SCALE;
+              //   rect.h = clusters[i].diameter * SCALE;
+              //   if (clusters[i].valid) {
+              //     SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+              //     valid_clusters++;
+              //     char text[100];
+              //     sprintf(text, "%d", clusters[i].id);
+              //     SDL_Surface *surface;
+              //     SDL_Color color = {0, 0, 0};
+              //     surface = TTF_RenderText_Solid(font, text, color);
+              //     SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+              //     SDL_Rect dstrect = {rect.x, rect.y, surface->w, surface->h};
+              //     SDL_FreeSurface(surface);
+              //     SDL_RenderCopy(ren, texture, NULL, &dstrect);
+              //     SDL_DestroyTexture(texture);
+              //   } else {
+              //     SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);
+              //   }
+              //   SDL_RenderDrawRect(ren, &rect);
+              // }
 
               // Draw cluster count to screen
-              char text[100];
-              sprintf(text, "Clusters: %d", valid_clusters);
-              SDL_Surface *surface;
-              SDL_Color color = {0, 0, 0};
-              surface = TTF_RenderText_Solid(font, text, color);
-              SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
-              SDL_Rect dstrect = {0, 0, surface->w, surface->h};
-              SDL_FreeSurface(surface);
-              SDL_RenderCopy(ren, texture, NULL, &dstrect);
-              SDL_DestroyTexture(texture);
+              // char text[100];
+              // sprintf(text, "Clusters: %d", valid_clusters);
+              // SDL_Surface *surface;
+              // SDL_Color color = {0, 0, 0};
+              // surface = TTF_RenderText_Solid(font, text, color);
+              // SDL_Texture *texture = SDL_CreateTextureFromSurface(ren, surface);
+              // SDL_Rect dstrect = {0, 0, surface->w, surface->h};
+              // SDL_FreeSurface(surface);
+              // SDL_RenderCopy(ren, texture, NULL, &dstrect);
+              // SDL_DestroyTexture(texture);
 
               // Update screen
-              SDL_RenderPresent(ren);
+              // SDL_RenderPresent(ren);
 
-              valid_clusters = 0;
+              int valid_clusters = 0;
               for (int n = 0; n < cluster_group->size; n++) {
                 if (clusters[n].valid) {
                   valid_clusters++;
